@@ -1,3 +1,5 @@
-#SPDX-License-Identifier: MIT-0
 ---
-# handlers file for ansible/roles/common
+- name: Перезапустить Nginx
+  ansible.builtin.service:
+    name: nginx
+    state: restarted
