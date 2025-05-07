@@ -1,3 +1,102 @@
-#SPDX-License-Identifier: MIT-0
 ---
-# tasks file for ansible/roles/common
+- name: Записать текущее время и имя пользователя в файл
+  ansible.builtin.lineinfile:
+    path: /home/vagrant/info.txt
+    line: "{{ ansible_date_time.iso8601 }} {{ ansible_user_id }}"
+    create: yes
+    owner: vagrant
+    group: vagrant
+    mode: '0644'
+
+- name: Определить версию ПО
+  ansible.builtin.set_fact:
+    nginx_version: "1.18.0"
+
+- name: Установить конкретную версию Nginx
+  ansible.builtin.apt:
+    name: "nginx={{ nginx_version }}*"
+    state: present
+    update_cache: yes
+  ignore_errors: yes # Игнорировать, если версия недоступна
+
+- name: Добавить ключ подписи Nginx
+  ansible.builtin.apt_key:
+    url: https://nginx.org/keys/nginx_signing.key
+    state: present
+
+- name: Добавить сторонний репозиторий Nginx
+  ansible.builtin.apt_repository:
+    repo: deb http://nginx.org/packages/ubuntu/ jammy nginx
+    state: present
+    filename: nginx
+  register: repo_added
+
+- name: Установить Nginx из стороннего репозитория
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+    update_cache: yes
+  when: repo_added.changed
+
+- name: Изменить конфигурацию Nginx (сменить порт)
+  ansible.builtin.lineinfile:
+    path: /etc/nginx/sites-available/default
+    regexp: '^(\s*listen\s*)80;'
+    line: '\18080;'
+    backrefs: yes
+  notify: Перезапустить Nginx
+
+- name: Создать резервную копию конфигурации Nginx
+  ansible.builtin.copy:
+    src: /etc/nginx/nginx.conf
+    dest: "/etc/nginx/nginx.conf.backup.{{ ansible_date_time.iso8601 }}"
+    remote_src: yes
+
+- name: Заменить конфигурацию Nginx с помощью шаблона Jinja2
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    mode: '0644'
+  notify: Перезапустить Nginx
+
+- name: Скачать файл из интернета с повторными попытками
+  ansible.builtin.get_url:
+    url: https://raw.githubusercontent.com/nginx/nginx/master/README
+    dest: /home/vagrant/nginx_readme.txt
+    mode: '0644'
+    retries: 3
+    delay: 5
+  register: download_result
+  failed_when: download_result.status_code is defined and download_result.status_code != 200
+  when: not ansible.builtin.stat(path='/home/vagrant/nginx_readme.txt').stat.exists
+
+- name: Добавить задачу cron
+  ansible.builtin.cron:
+    name: "Проверка времени работы системы"
+    minute: "*/5"
+    job: "uptime >> /home/vagrant/uptime.log"
+
+- name: Клонировать git-репозитории
+  ansible.builtin.git:
+    repo: "{{ item.repo }}"
+    dest: "/home/vagrant/repos/{{ item.name }}"
+    version: main
+  loop:
+    - { name: flask, repo: 'https://github.com/pallets/flask.git' }
+    - { name: jinja, repo: 'https://github.com/pallets/jinja.git' }
+    - { name: werkzeug, repo: 'https://github.com/pallets/werkzeug.git' }
+
+- name: Установить зависимости Python для репозиториев
+  ansible.builtin.pip:
+    requirements: "/home/vagrant/repos/{{ item.name }}/requirements.txt"
+    state: present
+  loop:
+    - { name: flask }
+    - { name: jinja }
+    - { name: werkzeug }
+  when: ansible.builtin.stat(path="/home/vagrant/repos/{{ item.name }}/requirements.txt").stat.exists
+
+- name: Перезапустить демон Nginx
+  ansible.builtin.service:
+    name: nginx
+    state: restarted
